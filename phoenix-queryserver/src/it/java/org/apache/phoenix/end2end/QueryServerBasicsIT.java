@@ -339,8 +339,50 @@ public class QueryServerBasicsIT extends BaseHBaseManagedTimeIT {
     assertEquals("123n7-app-2-", rs.getString(1));
     assertFalse(rs.next());
 
-    select.setString(1, null);
-    rs = select.executeQuery();
-    assertFalse(rs.next());
-  }
+      select.setString(1, null);
+      rs = select.executeQuery();
+      assertFalse(rs.next());
+    }
+
+    @Test
+    public void testParameterizedJoin() throws Exception {
+        String tableA = "A";
+        String tableB = "B";
+
+        String createA = "CREATE TABLE \"" + tableA + "\" (\n" +
+                "  \"a1\"   VARCHAR PRIMARY KEY ,\n" +
+                "  \"a2\"   VARCHAR             \n" +
+                ")";
+        String createB = "CREATE TABLE \"" + tableB + "\" (\n" +
+                "  \"b1\"   VARCHAR PRIMARY KEY ,\n" +
+                "  \"b2\"   VARCHAR             \n" +
+                ")\n";
+        try (Connection conn = DriverManager.getConnection(CONN_STRING);
+             Statement stmt = conn.createStatement()) {
+            conn.setAutoCommit(false);
+            assertFalse(stmt.execute("DROP TABLE IF EXISTS " + tableA));
+            assertFalse(stmt.execute("DROP TABLE IF EXISTS " + tableB));
+
+            assertFalse(stmt.execute(createA));
+            assertFalse(stmt.execute(createB));
+            Statement statement = null;
+            ResultSet rs = null;
+            PreparedStatement ps = null;
+
+
+            String sql = "SELECT \""+ tableA + "\".\"a2\" " +
+                    "FROM \"" + tableA + "\" JOIN \"" + tableB + "\" ON (\"" + tableA + "\".\"a1\" = \""+ tableB +"\".\"b1\") " +
+                    "WHERE (\""+ tableB +"\".\"b2\" = ?) ";
+
+            ps = conn.prepareStatement(sql);
+
+            ps.setString(1, "some value");
+
+            rs = ps.executeQuery();
+            assertFalse(rs.next());
+        }
+
+    }
+
 }
+
