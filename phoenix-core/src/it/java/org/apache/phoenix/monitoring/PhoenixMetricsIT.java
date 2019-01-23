@@ -50,6 +50,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -61,6 +62,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.metrics2.AbstractMetric;
 import org.apache.phoenix.compile.StatementContext;
 import org.apache.phoenix.end2end.BaseUniqueNamesOwnClusterIT;
 import org.apache.phoenix.exception.SQLExceptionCode;
@@ -85,6 +89,9 @@ import com.google.common.collect.Sets;
 
 public class PhoenixMetricsIT extends BaseUniqueNamesOwnClusterIT {
 
+    private static final Log LOG = LogFactory.getLog(PhoenixMetricsIT.class);
+    private static final int MAX_RETRIES = 5;
+
     private static final List<MetricType> mutationMetricsToSkip =
             Lists.newArrayList(MetricType.MUTATION_COMMIT_TIME);
     private static final List<MetricType> readMetricsToSkip =
@@ -104,15 +111,17 @@ public class PhoenixMetricsIT extends BaseUniqueNamesOwnClusterIT {
         setUpTestDriver(new ReadOnlyProps(props.entrySet().iterator()));
         // need the non-test driver for some tests that check number of hconnections, etc.
         DriverManager.registerDriver(PhoenixDriver.INSTANCE);
+
     }
 
     @Test
-    public void testResetGlobalPhoenixMetrics() {
+    public void testResetGlobalPhoenixMetrics() throws Exception {
         resetGlobalMetrics();
         for (GlobalMetric m : PhoenixRuntime.getGlobalPhoenixClientMetrics()) {
             assertEquals(0, m.getTotalSum());
             assertEquals(0, m.getNumberOfSamples());
         }
+        assertTrue(verifyMetricsFromSink());
     }
 
     @Test
@@ -146,6 +155,8 @@ public class PhoenixMetricsIT extends BaseUniqueNamesOwnClusterIT {
         assertTrue(GLOBAL_HBASE_COUNT_MILLS_BETWEEN_NEXTS.getMetric().getTotalSum() > 0);
         assertTrue(GLOBAL_HBASE_COUNT_BYTES_REGION_SERVER_RESULTS.getMetric().getTotalSum() > 0);
         assertTrue(GLOBAL_HBASE_COUNT_SCANNED_REGIONS.getMetric().getTotalSum() > 0);
+
+        assertTrue(verifyMetricsFromSink());
     }
 
     @Test
@@ -163,6 +174,8 @@ public class PhoenixMetricsIT extends BaseUniqueNamesOwnClusterIT {
         assertEquals(0, GLOBAL_FAILED_QUERY_COUNTER.getMetric().getTotalSum());
         assertEquals(0, GLOBAL_SPOOL_FILE_COUNTER.getMetric().getTotalSum());
         assertEquals(0, GLOBAL_MUTATION_BATCH_FAILED_COUNT.getMetric().getTotalSum());
+
+        assertTrue(verifyMetricsFromSink());
     }
 
     @Test
@@ -196,12 +209,47 @@ public class PhoenixMetricsIT extends BaseUniqueNamesOwnClusterIT {
         assertTrue(GLOBAL_HBASE_COUNT_MILLS_BETWEEN_NEXTS.getMetric().getTotalSum() > 0);
         assertTrue(GLOBAL_HBASE_COUNT_BYTES_REGION_SERVER_RESULTS.getMetric().getTotalSum() > 0);
         assertTrue(GLOBAL_HBASE_COUNT_SCANNED_REGIONS.getMetric().getTotalSum() > 0);
+
+        assertTrue(verifyMetricsFromSink());
     }
 
     private static void resetGlobalMetrics() {
         for (GlobalMetric m : PhoenixRuntime.getGlobalPhoenixClientMetrics()) {
             m.reset();
         }
+    }
+
+    private boolean verifyMetricsFromSink() throws InterruptedException {
+        Map<String, Long> expectedMetrics = new HashMap<>();
+        for (GlobalMetric m : PhoenixRuntime.getGlobalPhoenixClientMetrics()) {
+            expectedMetrics.put(m.getMetricType().name(), m.getTotalSum());
+        }
+
+        for (int i = 0; i < MAX_RETRIES; i++) {
+            LOG.info("Verifying Global Metrics from Hadoop Sink, Retry: " + (i + 1));
+            if (verifyMetricsFromSinkOnce(expectedMetrics)) {
+                LOG.info("Values from Hadoop Metrics Sink match actual values");
+                return true;
+            }
+            Thread.sleep(1000);
+        }
+        return false;
+    }
+
+    private boolean verifyMetricsFromSinkOnce(Map<String, Long> expectedMetrics) {
+        synchronized (GlobalPhoenixMetricsTestSink.lock) {
+            for (AbstractMetric metric : GlobalPhoenixMetricsTestSink.metrics) {
+                if (expectedMetrics.containsKey(metric.name())) {
+                    long expectedValue = expectedMetrics.get(metric.name());
+                    long actualValue = metric.value().longValue();
+                    if (expectedValue != actualValue) {
+                        LOG.warn("Metric from Hadoop Sink: " + metric.name() + " didn't match expected.");
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
     }
 
     private static void createTableAndInsertValues(String tableName, boolean resetGlobalMetricsAfterTableCreate)
